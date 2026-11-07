@@ -1,39 +1,39 @@
-# KOSPI Telegram Alert
+# KOSPI Telegram Alert Bot (GitHub Actions)
 
-5분마다 KOSPI(^KS11) 지수를 조회하고, 4,000 이상 또는 3,800 이하일 때 매 실행마다 텔레그램 메시지를 전송합니다.
+## Features
+- `/upper 4200`: set upper threshold
+- `/lower 3700`: set lower threshold
+- `/status`: show settings
+- `/price`: latest available KOSPI price (may be delayed)
+- `/on` and `/off`: enable/disable threshold notifications
+- `/help`: show commands
+- Alerts repeat on each scheduled run during KOSPI regular market hours when price is outside thresholds.
+- Commands are processed 24/7 when the workflow runs, including weekends.
 
-## 텔레그램 설정
+## Setup
+1. Upload `main.py`, `requirements.txt`, `state.json`, and `.github/workflows/kospi-alert.yml` to the **root** of your existing GitHub repository, replacing old files. Remove the earlier test-message workflow step if you added it.
+2. Under **Settings > Secrets and variables > Actions**, keep these repository secrets:
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+3. Under **Settings > Actions > General**, allow workflows and ensure **Workflow permissions** allow read/write if repository policy requires it. This workflow declares `permissions: contents: write`.
+4. Ensure the default branch is not protected against pushes by GitHub Actions. State is saved by committing `state.json` back to the repository. A branch ruleset blocking pushes will prevent settings persistence.
+5. Run **Actions > KOSPI Telegram Alert > Run workflow**. Send `/status` to your bot and manually run again to check that it replies.
+6. Send `/upper 4200`, then manually run again. You should receive confirmation; check that `state.json` was updated in the repository.
 
-1. 텔레그램에서 `@BotFather`에게 `/newbot`을 보내 봇을 만들고 토큰을 받습니다.
-2. 만든 봇과 대화를 열고 `/start`를 보냅니다.
-3. 브라우저에서 `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`를 열어 `message.chat.id` 값을 확인합니다. `<YOUR_TOKEN>`은 실제 토큰으로 바꿉니다. 토큰 URL을 타인에게 공유하지 마세요.
-4. GitHub 저장소의 **Settings → Secrets and variables → Actions → New repository secret**에서 다음 두 개를 추가합니다.
-   - `TELEGRAM_BOT_TOKEN`: BotFather가 발급한 토큰
-   - `TELEGRAM_CHAT_ID`: `message.chat.id` 값
+## How it works
+- GitHub Actions cron: every five minutes, 24 hours a day. Scheduled runs may be delayed or skipped; this is not a real-time bot.
+- Reads Telegram messages with `getUpdates` and processes commands from `TELEGRAM_CHAT_ID` only.
+- Stores upper/lower/enabled/update_offset in `state.json`, committed by the workflow for persistence.
+- Checks KOSPI thresholds only on weekdays from 09:00 to 15:30 KST. Exchange holidays are not separately recognized, but stale quote checking prevents stale alerts.
+- `/price` may return the last quote outside market hours.
 
-## GitHub 설정
-
-1. 이 프로젝트의 파일과 `.github/workflows/kospi-alert.yml`을 새 GitHub 저장소의 **기본 브랜치**에 업로드합니다.
-2. 저장소 **Actions** 탭에서 워크플로를 활성화합니다.
-3. **Actions → KOSPI Telegram Alert → Run workflow**로 수동 실행을 시험합니다. 장외 시간에는 정상적으로 알림을 보내지 않습니다.
-4. 평일 한국 시간 09:00~15:30에 약 5분마다 자동 실행됩니다. GitHub 예약 작업은 지연되거나 누락될 수 있습니다.
-
-## 로컬 테스트
-
-```bash
-pip install -r requirements.txt
-export TELEGRAM_BOT_TOKEN='your-token'
-export TELEGRAM_CHAT_ID='your-chat-id'
-python main.py
-```
-
-Windows PowerShell에서는 `export` 대신 `$env:TELEGRAM_BOT_TOKEN="..."` 형식을 사용하세요.
-
-## 유의사항
-
-- Yahoo Finance 비공식 데이터(yfinance)를 사용합니다. 실시간 시세가 아니거나, 제공이 중단되거나, 시세가 지연될 수 있습니다.
-- 데이터가 20분보다 오래되면 메시지를 보내지 않고 실행을 실패 처리합니다.
-- 한국 증시 휴장일을 별도로 조회하지 않지만 오래된 데이터 전송을 차단합니다.
-- 조건 충족 중에는 **매 실행마다 반복 발송**합니다. 지수가 정상 범위에 있으면 발송하지 않습니다.
-- GitHub Actions 사용량과 저장소 정책은 계정 및 저장소 유형에 따라 달라집니다.
-- 토큰을 소스 코드에 넣거나 공개 저장소에 커밋하지 마세요.
+## Notes and limitations
+- The bot must not have a Telegram webhook configured, as `getUpdates` does not work while a webhook is active. For a bot used only with this project, remove a webhook via `https://api.telegram.org/bot<TOKEN>/deleteWebhook` (never share your token).
+- If you have used the bot before, queued updates may be processed on first run (up to 100 per run). Avoid sending unrelated commands from other chats.
+- Only the configured chat ID can control this bot. Keep your GitHub secrets private.
+- The workflow commits changes to `state.json` when commands are processed. If branch protection blocks the push, subsequent runs may repeat replies. Resolve permissions before relying on the bot.
+- A failed command reply can be repeated on retry; there is no transactional guarantee between Telegram delivery and GitHub commits.
+- Yahoo Finance data is unofficial and may be delayed, rate-limited, or unavailable. This is not suitable for time-critical trading.
+- Frequent 24/7 runs may consume GitHub Actions minutes on private repositories. Public repositories generally have free standard-hosted runner usage, subject to GitHub policies.
+- If the repo's default branch is not `main`, GitHub still schedules workflows on the default branch.
+- GitHub may disable scheduled workflows on inactive public repositories after prolonged inactivity.
