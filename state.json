@@ -1,6 +1,6 @@
 {
-  "upper": 4000.0,
-  "lower": 3800.0,
+  "upper": 6000.0,
+  "lower": 3000.0,
   "enabled": true,
-  "update_offset": 843780234
+  "update_offset": 843780236
 }
