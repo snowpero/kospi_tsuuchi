@@ -2,39 +2,49 @@ name: KOSPI Telegram Alert
 
 on:
   schedule:
-    - cron: "*/5 0-6 * * 1-5"
+    - cron: '*/5 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kospi-telegram-bot
+  cancel-in-progress: false
 
 jobs:
   check-kospi:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 4
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Check KOSPI and send alert
+      - name: Process Telegram commands and KOSPI alerts
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
 
-      - name: Test Telegram Message
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Save settings and Telegram update offset
+        if: always()
         run: |
-          curl --fail-with-body -sS \
-            -X POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=✅ KOSPI 알림 봇 테스트 성공!"
+          if ! git diff --quiet -- state.json; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add state.json
+            git commit -m 'chore: persist KOSPI bot state [skip ci]'
+            git push
+          else
+            echo 'No state changes'
+          fi
