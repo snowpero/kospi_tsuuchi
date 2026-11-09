@@ -46,19 +46,36 @@ def send(message):
 
 
 def fetch_kospi(require_fresh=False):
-    history = yf.Ticker("^KS11").history(period="5d", interval="5m", auto_adjust=False)
-    if history.empty:
-        raise RuntimeError("코스피 시세 데이터를 가져올 수 없습니다.")
-    last = history.iloc[-1]
-    value = float(last["Close"])
-    stamp = history.index[-1].to_pydatetime().astimezone(KST)
-    if not (0 < value < 100000):
-        raise RuntimeError("비정상적인 코스피 지수 값입니다.")
-    if require_fresh:
-        age = (datetime.now(KST) - stamp).total_seconds()
-        if not (-120 <= age <= 20 * 60):
-            raise RuntimeError(f"시세가 오래되어 알림을 생략합니다: {stamp:%Y-%m-%d %H:%M}")
-    return value, stamp
+    """Return (value, timestamp), or (None, None) for unavailable/invalid/stale data."""
+    try:
+        history = yf.Ticker("^KS11").history(
+            period="5d", interval="5m", auto_adjust=False
+        )
+        if history.empty:
+            logging.warning("코스피 시세 데이터가 없습니다. 알림을 생략합니다.")
+            return None, None
+
+        last = history.iloc[-1]
+        value = float(last["Close"])
+        stamp = history.index[-1].to_pydatetime().astimezone(KST)
+
+        if not (0 < value < 100000):
+            logging.warning("비정상적인 코스피 지수 값: %s", value)
+            return None, None
+
+        if require_fresh:
+            age = (datetime.now(KST) - stamp).total_seconds()
+            if not (-120 <= age <= 20 * 60):
+                logging.warning(
+                    "시세가 오래되었거나 시각이 유효하지 않아 알림을 생략합니다: %s",
+                    stamp.strftime("%Y-%m-%d %H:%M"),
+                )
+                return None, None
+
+        return value, stamp
+    except Exception as exc:
+        logging.warning("코스피 시세 조회 실패, 이번 조회를 생략합니다: %s", exc)
+        return None, None
 
 
 def market_open(now):
@@ -103,14 +120,12 @@ def handle_command(text, state):
         state["enabled"] = False
         return "🔕 코스피 지수 알림을 중지했습니다. 명령어는 계속 사용할 수 있습니다."
     if command == "/price":
-        try:
-            value, stamp = fetch_kospi()
-            return (f"📈 최근 코스피: {value:,.2f}\n"
-                    f"시세 시각: {stamp:%Y-%m-%d %H:%M} KST\n"
-                    "※ 장외에는 마지막 거래 시세이며 지연될 수 있습니다.")
-        except Exception as exc:
-            logging.warning("Price lookup failed: %s", exc)
+        value, stamp = fetch_kospi(require_fresh=False)
+        if value is None:
             return "⚠️ 현재 코스피 시세를 조회할 수 없습니다. 잠시 후 다시 시도해 주세요."
+        return (f"📈 최근 코스피: {value:,.2f}\n"
+                f"시세 시각: {stamp:%Y-%m-%d %H:%M} KST\n"
+                "※ 장외에는 마지막 거래 시세이며 지연될 수 있습니다.")
     return None
 
 
@@ -142,6 +157,9 @@ def check_alert(state):
         logging.info("Outside regular KOSPI hours: %s", now.isoformat())
         return
     value, stamp = fetch_kospi(require_fresh=True)
+    if value is None:
+        logging.info("유효한 코스피 시세가 없어 이번 알림을 건너뜁니다.")
+        return
     if value >= state["upper"]:
         condition = f"상한 {state['upper']:,.0f} 이상"
         icon = "📈"
