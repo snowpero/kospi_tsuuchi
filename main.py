@@ -33,7 +33,24 @@ def save_state(state):
 
 
 def telegram(method, payload):
-    response = requests.post(f"{API}/{method}", json=payload, timeout=25)
+    for attempt in range(3):
+    try:
+        response = requests.post(
+            f"{API}/{method}",
+            json=payload,
+            timeout=10
+        )
+        break
+
+    except requests.exceptions.RequestException as e:
+        logging.warning(
+            "Telegram API 요청 실패 (%d/3): %s",
+            attempt + 1,
+            e
+        )
+
+        if attempt == 2:
+            return None
     response.raise_for_status()
     data = response.json()
     if not data.get("ok"):
@@ -131,6 +148,12 @@ def handle_command(text, state):
 
 def process_updates(state):
     updates = telegram("getUpdates", {"offset": state["update_offset"], "limit": 100, "timeout": 0})
+    if updates is None:
+    logging.warning(
+        "Telegram 명령어 조회 실패. 이번 실행을 건너뜁니다."
+    )
+    return
+    
     for update in updates:
         update_id = int(update["update_id"])
         message = update.get("message") or update.get("edited_message") or {}
