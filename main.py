@@ -2,8 +2,10 @@
 import json
 import logging
 import os
+import re
 import sys
-from datetime import datetime, time
+from datetime import date, datetime, time
+from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -15,8 +17,12 @@ STATE_PATH = Path(__file__).with_name("state.json")
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
 API = f"https://api.telegram.org/bot{TOKEN}"
-CNN_INDEX_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-CNN_PAGE_URL = "https://edition.cnn.com/markets/fear-and-greed"
+MACROMICRO_CHARTS_URL = "https://en.macromicro.me/trader-insights"
+CNN_READING_PATTERN = re.compile(
+    r'<h6 class="stat-name">\s*US - CNN Fear and Greed Index\s*</h6>\s*'
+    r'<div class="date-label">\s*<time>\s*(\d{4}-\d{2}-\d{2})\s*</time>\s*</div>\s*'
+    r'<div class="stat-val">\s*<span class="val">\s*(\d+(?:\.\d+)?)\s*</span>'
+)
 CNN_THRESHOLD = 10
 DEFAULT = {"upper": 4000.0, "lower": 3800.0, "enabled": True, "update_offset": 0}
 
@@ -208,46 +214,51 @@ def check_alert(state):
     logging.info("Threshold notification sent")
 
 
+@lru_cache(maxsize=1)
 def fetch_fear_greed():
+    """Read the public Market Sentiment card once per workflow run."""
     try:
-        response = requests.get(
-            CNN_INDEX_URL,
-            headers={"User-Agent": "Mozilla/5.0", "Referer": CNN_PAGE_URL},
-            timeout=10,
-        )
+        response = requests.get(MACROMICRO_CHARTS_URL, timeout=10)
         response.raise_for_status()
-        reading = response.json()["fear_and_greed"]
-        score = reading["score"]
-        if type(score) not in (int, float) or not 0 <= score <= 100:
+        match = CNN_READING_PATTERN.search(response.text)
+        if match is None:
+            raise ValueError("CNN index date and score not found in MacroMicro Charts")
+        reading_date = date.fromisoformat(match[1])
+        score = float(match[2])
+        if not 0 <= score <= 100:
             raise ValueError("CNN score is outside the valid range")
-        stamp = datetime.fromisoformat(reading["timestamp"])
-        if stamp.tzinfo is None:
-            raise ValueError("CNN timestamp has no time zone")
-        stamp = stamp.astimezone(KST)
-    except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
-        logging.warning("CNN 공포·탐욕 지수 조회 실패: %s", exc)
+    except (requests.RequestException, ValueError) as exc:
+        logging.warning("MacroMicro에서 CNN 공포·탐욕 지수 조회 실패: %s", exc)
         return None
-    return score, stamp
+    return score, reading_date
 
 
-def format_fear_greed_alert(score, stamp, *, test=False):
+def format_fear_greed_alert(score, reading_date, *, test=False):
     title = "🧪 CNN 공포·탐욕 지수 테스트 알림" if test else "😨 CNN 공포·탐욕 지수 알림"
-    return (f"{title}\n현재 지수: {score:g}\n"
+    return (f"{title}\n현재 지수: {int(score + 0.5)} (원래 점수: {score:g})\n"
             f"자동 알림 기준: {CNN_THRESHOLD} 이하\n"
-            f"CNN 갱신 시각: {stamp:%Y-%m-%d %H:%M} KST\n{CNN_PAGE_URL}")
+            f"지수 기준일: {reading_date:%Y-%m-%d}\n"
+            f"출처: MacroMicro Charts\n{MACROMICRO_CHARTS_URL}")
 
 
 def check_fear_greed_alert(state):
     reading = fetch_fear_greed()
     if reading is None:
         return
-    score, stamp = reading
+    score, reading_date = reading
+    # Older state records whether an alert was sent, without its score.
+    legacy_alert_sent = state.pop("fear_greed_alert_sent", False)
     if score > CNN_THRESHOLD:
-        state.pop("fear_greed_alert_sent", None)
-    elif not state.get("fear_greed_alert_sent"):
-        result = send(format_fear_greed_alert(score, stamp))
-        if result is not None:
-            state["fear_greed_alert_sent"] = True
+        state.pop("fear_greed_alert_score", None)
+        return
+
+    rounded_score = int(score + 0.5)
+    if legacy_alert_sent:
+        state.setdefault("fear_greed_alert_score", rounded_score)
+    if state.get("fear_greed_alert_score") == rounded_score:
+        return
+    if send(format_fear_greed_alert(score, reading_date)) is not None:
+        state["fear_greed_alert_score"] = rounded_score
 
 
 def main():
