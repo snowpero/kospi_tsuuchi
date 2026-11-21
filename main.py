@@ -1,4 +1,4 @@
-"""Telegram-controlled KOSPI alerts, run periodically by GitHub Actions."""
+"""Telegram alerts for KOSPI and CNN Fear & Greed, run periodically by GitHub Actions."""
 import json
 import logging
 import os
@@ -15,6 +15,9 @@ STATE_PATH = Path(__file__).with_name("state.json")
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = str(os.environ["TELEGRAM_CHAT_ID"])
 API = f"https://api.telegram.org/bot{TOKEN}"
+CNN_INDEX_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+CNN_PAGE_URL = "https://edition.cnn.com/markets/fear-and-greed"
+CNN_THRESHOLD = 10
 DEFAULT = {"upper": 4000.0, "lower": 3800.0, "enabled": True, "update_offset": 0}
 
 
@@ -59,7 +62,7 @@ def telegram(method, payload):
 
 
 def send(message):
-    telegram("sendMessage", {"chat_id": CHAT_ID, "text": message})
+    return telegram("sendMessage", {"chat_id": CHAT_ID, "text": message})
 
 
 def fetch_kospi(require_fresh=False):
@@ -108,7 +111,8 @@ def handle_command(text, state):
         return ("📋 코스피 알림 명령어\n"
                 "/upper 4200 — 상한 변경\n/lower 3700 — 하한 변경\n"
                 "/status — 설정 확인\n/price — 최근 지수\n"
-                "/on — 알림 켜기\n/off — 알림 끄기")
+                "/on — 알림 켜기\n/off — 알림 끄기\n"
+                "/cnntest — CNN 공포·탐욕 지수 테스트 알림")
     if command in ("/upper", "/lower"):
         if len(parts) != 2:
             return f"사용법: {command} 4200"
@@ -143,6 +147,12 @@ def handle_command(text, state):
         return (f"📈 최근 코스피: {value:,.2f}\n"
                 f"시세 시각: {stamp:%Y-%m-%d %H:%M} KST\n"
                 "※ 장외에는 마지막 거래 시세이며 지연될 수 있습니다.")
+    if command == "/cnntest":
+        reading = fetch_fear_greed()
+        if reading is None:
+            return ("🧪 CNN 공포·탐욕 지수 테스트 알림\n"
+                    "텔레그램 발송 확인 · CNN 지수 조회 실패")
+        return format_fear_greed_alert(*reading, test=True)
     return None
 
 
@@ -198,10 +208,56 @@ def check_alert(state):
     logging.info("Threshold notification sent")
 
 
+def fetch_fear_greed():
+    try:
+        response = requests.get(
+            CNN_INDEX_URL,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": CNN_PAGE_URL},
+            timeout=10,
+        )
+        response.raise_for_status()
+        reading = response.json()["fear_and_greed"]
+        score = reading["score"]
+        if type(score) not in (int, float) or not 0 <= score <= 100:
+            raise ValueError("CNN score is outside the valid range")
+        stamp = datetime.fromisoformat(reading["timestamp"])
+        if stamp.tzinfo is None:
+            raise ValueError("CNN timestamp has no time zone")
+        stamp = stamp.astimezone(KST)
+    except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+        logging.warning("CNN 공포·탐욕 지수 조회 실패: %s", exc)
+        return None
+    return score, stamp
+
+
+def format_fear_greed_alert(score, stamp, *, test=False):
+    title = "🧪 CNN 공포·탐욕 지수 테스트 알림" if test else "😨 CNN 공포·탐욕 지수 알림"
+    return (f"{title}\n현재 지수: {score:g}\n"
+            f"자동 알림 기준: {CNN_THRESHOLD} 이하\n"
+            f"CNN 갱신 시각: {stamp:%Y-%m-%d %H:%M} KST\n{CNN_PAGE_URL}")
+
+
+def check_fear_greed_alert(state):
+    reading = fetch_fear_greed()
+    if reading is None:
+        return
+    score, stamp = reading
+    if score > CNN_THRESHOLD:
+        state.pop("fear_greed_alert_sent", None)
+    elif not state.get("fear_greed_alert_sent"):
+        result = send(format_fear_greed_alert(score, stamp))
+        if result is not None:
+            state["fear_greed_alert_sent"] = True
+
+
 def main():
     state = load_state()
     try:
         process_updates(state)
+    finally:
+        save_state(state)
+    try:
+        check_fear_greed_alert(state)
     finally:
         save_state(state)
     check_alert(state)
