@@ -2,6 +2,5 @@
   "upper": 6000.0,
   "lower": 3000.0,
   "enabled": true,
-  "update_offset": 843780240,
-  "index_board_alert_score": 10
+  "update_offset": 843780240
 }
